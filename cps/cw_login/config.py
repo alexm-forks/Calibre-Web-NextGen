@@ -49,6 +49,8 @@ SESSION_KEYS = {
     "_id",
     "_fresh",
     "_permanent",
+    "_remember_rolling",
+    "_remember_renewed_at",
     "next",
 }
 

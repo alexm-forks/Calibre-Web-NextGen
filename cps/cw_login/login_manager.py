@@ -8,6 +8,7 @@ from datetime import datetime
 from datetime import timezone
 from datetime import timedelta
 import hashlib
+import time
 
 from flask import abort
 from flask import current_app
@@ -46,6 +47,13 @@ from .utils import confirm_login
 from .utils import expand_login_view
 from .utils import login_url as make_login_url
 from .utils import make_next_param
+
+
+
+def _clock():
+    """Seconds since the epoch; a seam so tests can move time for the
+    rolling remember cookie without moving it for Flask and Werkzeug."""
+    return time.time()
 
 
 class LoginManager:
@@ -421,6 +429,13 @@ class LoginManager:
             if "_random" not in session:
                 session["_random"] = remember_dict['random']
             session["_fresh"] = False
+            # A rolling remember cookie (login_user(rolling=True)) carries its
+            # own duration; restoring from it renews it, since it is in use.
+            rolling = remember_dict.get("rolling")
+            if isinstance(rolling, (int, float)) and rolling > 0:
+                session["_remember_seconds"] = rolling
+                session["_remember_rolling"] = True
+                session["_remember"] = "set"
             user = None
             if self._user_callback:
                 user = self._user_callback(remember_dict['user'], session["_random"], None)
@@ -460,6 +475,15 @@ class LoginManager:
         ):
             session["_remember"] = "set"
 
+        # CWNG: a rolling remember cookie is renewed once it is past half its
+        # lifetime, which keeps the expiry sliding without a Set-Cookie on
+        # every response.
+        if ("_remember" not in session and session.get("_remember_rolling")
+                and "_user_id" in session and "_remember_seconds" in session):
+            renewed_at = session.get("_remember_renewed_at") or 0
+            if _clock() - renewed_at >= session["_remember_seconds"] / 2:
+                session["_remember"] = "set"
+
         if "_remember" in session:
             operation = session.pop("_remember", None)
 
@@ -497,7 +521,7 @@ class LoginManager:
             salt="remember",
             serializer=TaggedJSONSerializer(),
             signer_kwargs=signer_kwargs,
-        ).dumps({"user":session["_user_id"], "random":session["_random"]})
+        ).dumps(self._remember_payload())
 
         if isinstance(duration, int):
             duration = timedelta(seconds=duration)
@@ -521,6 +545,18 @@ class LoginManager:
             httponly=httponly,
             samesite=samesite,
         )
+
+    @staticmethod
+    def _remember_payload():
+        payload = {"user": session["_user_id"], "random": session["_random"]}
+        if session.get("_remember_rolling") and "_remember_seconds" in session:
+            payload["rolling"] = session["_remember_seconds"]
+            session["_remember_renewed_at"] = int(_clock())
+            from .signals import remember_cookie_renewed
+            remember_cookie_renewed.send(
+                current_app._get_current_object(), user_id=session["_user_id"],
+                random=session["_random"], seconds=session["_remember_seconds"])
+        return payload
 
     def _clear_cookie(self, response):
         config = current_app.config

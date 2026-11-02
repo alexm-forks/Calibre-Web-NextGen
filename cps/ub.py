@@ -19,6 +19,7 @@ from binascii import hexlify
 
 from .cw_login import AnonymousUserMixin, current_user
 from .cw_login import user_logged_in
+from .cw_login.signals import remember_cookie_renewed
 
 try:
     from flask_dance.consumer.backend.sqla import OAuthConsumerMixin  # pyright: ignore[reportMissingImports]
@@ -36,7 +37,7 @@ from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, UniqueConstra
 from sqlalchemy import String, Integer, SmallInteger, Boolean, DateTime, Float, JSON, Text, BLOB, LargeBinary
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy.pool import NullPool
-from sqlalchemy.sql.expression import func
+from sqlalchemy.sql.expression import func, or_
 try:
     # Compatibility with sqlalchemy 2.0
     from sqlalchemy.orm import declarative_base
@@ -146,6 +147,36 @@ def check_user_session(user_id, session_key, random):
 
 
 user_logged_in.connect(signal_store_user_session)
+
+
+def extend_user_session(user_id, random, seconds):
+    """Keep a login's server-side record alive as long as its rolling
+    remember cookie (cw_login remember_cookie_renewed).
+
+    ``load_user`` refuses a remember cookie whose User_Sessions row is gone,
+    and TaskClean deletes rows past ``expiry``, which login sets to 31 days.
+    Without this a rolling login would still end 31 days after sign-in.
+    Never shortens an expiry.
+    """
+    try:
+        expiry = int((datetime.now() + timedelta(seconds=seconds)).timestamp())
+        session.query(User_Sessions).filter(
+            User_Sessions.user_id == int(user_id),
+            User_Sessions.random == random,
+            or_(User_Sessions.expiry == None, User_Sessions.expiry < expiry),  # noqa: E711
+        ).update({User_Sessions.expiry: expiry}, synchronize_session=False)
+        session.commit()
+    except (exc.OperationalError, exc.InvalidRequestError, ValueError, TypeError) as e:
+        session.rollback()
+        log.exception(e)
+
+
+def _signal_extend_user_session(_app, user_id=None, random=None, seconds=None, **_kw):
+    if user_id and random and seconds:
+        extend_user_session(user_id, random, seconds)
+
+
+remember_cookie_renewed.connect(_signal_extend_user_session)
 
 def store_ids(result):
     ids = list()

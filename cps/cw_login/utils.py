@@ -163,7 +163,7 @@ def login_remembered():
     return False
 
 
-def login_user(user, remember=False, duration=None, force=False, fresh=True):
+def login_user(user, remember=False, duration=None, force=False, fresh=True, rolling=False):
     """
     Logs a user in. You should pass the actual user object to this. If the
     user's `is_active` property is ``False``, they will not be logged in
@@ -186,6 +186,12 @@ def login_user(user, remember=False, duration=None, force=False, fresh=True):
     :param fresh: setting this to ``False`` will log in the user with a session
         marked as not "fresh". Defaults to ``True``.
     :type fresh: bool
+    :param rolling: CWNG: with ``remember`` and a ``duration``, renew the
+        remember cookie while it is in use, so it lapses only after
+        ``duration`` without a visit instead of ``duration`` after sign-in.
+        The duration travels inside the signed cookie, so it survives the
+        browser session ending. Defaults to ``False`` (a fixed expiry).
+    :type rolling: bool
     """
     if not force and not user.is_active:
         return False
@@ -196,6 +202,11 @@ def login_user(user, remember=False, duration=None, force=False, fresh=True):
     session["_id"] = current_app.login_manager._session_identifier_generator()
     session["_random"] = os.urandom(10).hex()
 
+    # Each login sets its own cookie lifetime: a previous login's duration or
+    # rolling cookie in the same browser session must not carry over.
+    session.pop("_remember_seconds", None)
+    session.pop("_remember_rolling", None)
+    session.pop("_remember_renewed_at", None)
     if remember:
         session["_remember"] = "set"
         session["_permanent"] = True
@@ -210,6 +221,8 @@ def login_user(user, remember=False, duration=None, force=False, fresh=True):
                 raise Exception(
                     f"duration must be a datetime.timedelta, instead got: {duration}"
                 ) from e
+            if rolling:
+                session["_remember_rolling"] = True
 
     # CWA Stats Logging
     try:
@@ -246,6 +259,9 @@ def logout_user():
 
     if "_random" in session:
         session.pop("_random")
+
+    session.pop("_remember_rolling", None)
+    session.pop("_remember_renewed_at", None)
 
 
     cookie_name = current_app.config.get("REMEMBER_COOKIE_NAME", COOKIE_NAME)
