@@ -13,6 +13,7 @@ import { Spinner, SpinnerCentered } from '../components/Spinner';
 import { EmptyState } from '../components/EmptyState';
 import { DiscoverSource } from '../components/DiscoverSource';
 import { DiscoverSection } from '../components/DiscoverSection';
+import { OfflineShelf } from '../components/OfflineShelf';
 import { VirtualizedGridRows } from '../components/VirtualizedGridRows';
 import { useUpdateCatalogCustomFields, useDiscoverSource, useBooks, useAdvancedSearch, useEntityList, ENTITY_PLURAL, useMe, useRenameTag, useDeleteTag, tagConflictOf, useMyLibraryRemovalImpact, useRemoveFromMyLibrary } from '../lib/queries';
 import type { TagConflict } from '../lib/queries';
@@ -1420,6 +1421,10 @@ export function Catalog({ entityKind, entityId, view, defaultFilter, tagPath }: 
           {libraryRefresh.message}
         </p>
       )}
+
+      {/* Books downloaded for offline reading; read from the device, so the
+          row works with no connection (lib/offline). Library landing only. */}
+      {!hideLibraryControls && !search && isPlainLibrary && <OfflineShelf />}
 
       {/* Discover: random picks, library landing only (not while searching). */}
       {!hideLibraryControls && !search && !discoverHidden && (

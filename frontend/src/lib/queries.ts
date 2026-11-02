@@ -9,6 +9,7 @@ import {
   navigateToLogout, noteSessionIdentity, TASK_FINISHED,
   getMetadataProviders, setMetadataProviderActive,
 } from './api';
+import { lastKnownIdentity, rememberIdentity } from './offline/identity';
 import type { PickerBook } from './shelfPicker';
 import { removeBookFromCache, applyBookEditToCache } from './scrollCache';
 import { replaceCachedIdentity } from './identityCache';
@@ -77,9 +78,23 @@ export function useMe() {
         // App bootstrap runs this first, so by the time any protected call can
         // fail we know whether a real session exists to lose (#1074).
         noteSessionIdentity(!!me.role?.anonymous);
+        rememberIdentity(me);
         return me;
       } catch (err) {
-        if (err instanceof ApiError && err.status === 401) return null;
+        if (err instanceof ApiError && err.status === 401) {
+          rememberIdentity(null);
+          return null;
+        }
+        // The server could not be reached at all (offline, or the server is
+        // down): start as the last signed-in user so downloaded books and
+        // queued positions stay usable. Any real answer replaces this.
+        if (!(err instanceof ApiError)) {
+          const known = lastKnownIdentity();
+          if (known) {
+            noteSessionIdentity(false);
+            return known;
+          }
+        }
         throw err;
       }
     },

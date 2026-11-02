@@ -26,6 +26,7 @@ import { ApiError, resourceUrl, resourceSrcSet, TASK_FAILED, TASK_FINISHED, TASK
 import { useT, useI18n } from '../lib/i18n';
 import { formatCustomColumnDate, formatPublishedDate } from '../lib/customColumnDisplay';
 import { getPrimaryReadTarget, withLookupMode } from '../lib/readerTarget';
+import { OfflineDownloadButton } from '../components/OfflineDownloadButton';
 import { hasRecipients, toggleRecipients } from '../lib/sendRecipients';
 import {
   canDeleteBooks, canDownloadBooks, canEditBookCover, canReadBooks, canUploadBooks,
@@ -735,6 +736,11 @@ export function BookDetail() {
               data-testid="open-lookup-action">
               <Glasses size={17} aria-hidden="true" focusable={false} />
             </Link>
+          ) : null}
+
+          {/* Offline reading: keep the EPUB on this device (lib/offline). */}
+          {canAccessBook && primaryReadTarget ? (
+            <OfflineDownloadButton book={book} className={styles.actionSecondary} />
           ) : null}
 
           {canSend && <button type="button" className={styles.actionSecondary}

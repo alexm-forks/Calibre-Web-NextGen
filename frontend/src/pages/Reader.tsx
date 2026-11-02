@@ -12,11 +12,14 @@ import {
   Search, MapPin,
 } from 'lucide-react';
 import {
-  type ReaderSettings, isWorthResending, useBook, useBookmark, useReaderSettings,
+  type ReaderSettings, isWorthResending, useBook, useBookmark, useMe, useReaderSettings,
   useReadingSources, useRecordReaderOpen, useSaveBookmark, useSaveReaderSettings, useReaderFonts, type ReadingSource,
 } from '../lib/queries';
 import { ApiError, apiPost, apiDelete, apiPatch, apiUrl, resourceUrl } from '../lib/api';
 import { positionOutbox } from '../lib/offline/positionSync';
+import { putOfflineBook, recordLocalPlace } from '../lib/offline/bookStore';
+import { pickResumeBookmark } from '../lib/offline/resumePlace';
+import { epubFormatOf, useOfflineReading } from '../lib/offline/useOffline';
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
 import { VisuallyHidden } from '../components/VisuallyHidden';
@@ -327,10 +330,35 @@ export function Reader({ id }: { id: string }) {
   lookupModeRef.current = lookupMode;
   const requestedSource = new URLSearchParams(search).get('source');
   const [placesOpen, setPlacesOpen] = useState(false);
-  const { data: book, isLoading, error } = useBook(id);
-  const { data: savedBookmark, isFetched: isBookmarkFetched } = useBookmark(id, 'epub');
-  const { data: settingsData, isFetched: isSettingsFetched } = useReaderSettings();
-  const { data: fontCatalog, isFetched: isFontsFetched, error: fontsError } = useReaderFonts();
+  const bookQuery = useBook(id);
+  const bookmarkQuery = useBookmark(id, 'epub');
+  const settingsQuery = useReaderSettings();
+  const fontsQuery = useReaderFonts();
+  const { data: me } = useMe();
+  const meId = me && !me.role?.anonymous ? me.id : null;
+  // A copy downloaded for offline reading (lib/offline). Used when the server
+  // can't be reached, and also online while it is still the server's file.
+  const offline = useOfflineReading(id);
+  const offlineCopyRef = useRef(offline.copy);
+  offlineCopyRef.current = offline.copy;
+  const unreachable = (q: { failureCount: number; failureReason: unknown }) =>
+    q.failureCount > 0 && !(q.failureReason instanceof ApiError);
+  const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  // Read from the device instead of waiting out the query retries: the first
+  // transport failure (or the browser saying it is offline) is enough.
+  const fromDevice = !!offline.copy && (browserOffline || unreachable(bookQuery));
+  const book = bookQuery.data ?? (fromDevice ? offline.copy!.detail : undefined);
+  const isLoading = bookQuery.isLoading && !book;
+  const error = book ? null : bookQuery.error;
+  const settledOrOffline = (q: { isFetched: boolean; failureCount: number }) =>
+    q.isFetched || (fromDevice && (browserOffline || q.failureCount > 0));
+  const savedBookmark = bookmarkQuery.data;
+  const isBookmarkFetched = settledOrOffline(bookmarkQuery);
+  const settingsData = settingsQuery.data;
+  const isSettingsFetched = settledOrOffline(settingsQuery);
+  const fontCatalog = fontsQuery.data;
+  const isFontsFetched = settledOrOffline(fontsQuery);
+  const fontsError = fontsQuery.error;
   const saveBookmark = useSaveBookmark(id);
   // #2750: one open per book, outside lookup mode, so reading here puts the
   // book on Currently Reading like the classic reader. A guest's 401 is ignored.
@@ -1232,9 +1260,19 @@ export function Reader({ id }: { id: string }) {
     repaintHighlight(hl.cfiRange, color, hl.id, !!notesRef.current.get(hl.id));
   }, [activeHl, id, repaintHighlight, reopenRefusedHighlight]);
 
+  // The server's saved place, or undefined when the server could not answer.
+  const serverPlace = bookmarkQuery.isSuccess
+    ? { bookmark: savedBookmark?.bookmark ?? null }
+    : bookmarkQuery.error instanceof ApiError ? { bookmark: null } : undefined;
   useEffect(() => {
-    savedCfiRef.current = savedBookmark?.bookmark ?? savedCfiRef.current;
-  }, [savedBookmark]);
+    // An unsent place from this device beats the server's; the server's beats
+    // this device's last place; and offline, this device's last place is it.
+    const picked = pickResumeBookmark({
+      server: serverPlace, pending: offline.pending, local: offline.local,
+    });
+    savedCfiRef.current = picked ?? savedCfiRef.current;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [savedBookmark, bookmarkQuery.isSuccess, bookmarkQuery.error, offline.pending, offline.local]);
 
   useEffect(() => {
     // Wait for the query to settle, not for it to succeed. A guest has no
@@ -1364,6 +1402,9 @@ export function Reader({ id }: { id: string }) {
       // send or the tab closing before the debounce fires.
       const observedAt = new Date().toISOString();
       lastObservedRef.current = observedAt;
+      if (meId !== null) {
+        void recordLocalPlace(meId, Number(id), { bookmark: cfi, observedAt }).catch(() => {});
+      }
       void positionOutbox().record({
         bookId: Number(id), format: 'epub', bookmark: cfi,
         ...(valid != null ? { percentage: valid } : {}),
@@ -1378,7 +1419,7 @@ export function Reader({ id }: { id: string }) {
         flushCfiSave();
       }, 800);
     },
-    [flushCfiSave, id],
+    [flushCfiSave, id, meId],
   );
 
   const applyTheme = useCallback((t: ReaderTheme) => {
@@ -1738,7 +1779,7 @@ export function Reader({ id }: { id: string }) {
 
   // Build the rendition once the epub format + its download URL are known.
   useEffect(() => {
-    if (!epubFormat || !epubContentUrl || !viewerRef.current || !isBookmarkFetched || !isSettingsFetched || !isFontsFetched || !settingsHydrated) return;
+    if (!epubFormat || !epubContentUrl || !viewerRef.current || !isBookmarkFetched || !isSettingsFetched || !isFontsFetched || !settingsHydrated || !offline.loaded) return;
     let cancelled = false;
     let stopSelectionObserver: (() => void) | undefined;
     setRendered(false);
@@ -1755,9 +1796,33 @@ export function Reader({ id }: { id: string }) {
       try {
         // Fetch the .epub ourselves (same-origin cookie auth) and hand epub.js
         // an ArrayBuffer — reliable archive open regardless of the URL extension.
-        const res = await fetch(resourceUrl(epubContentUrl), { credentials: 'include' });
-        if (!res.ok) throw new Error(t('Could not load the book file ({status})', { status: res.status }));
-        const buf = await res.arrayBuffer();
+        //
+        // A downloaded copy is opened from the device: always when the server
+        // can't be reached, and online while it is still the server's file. A
+        // re-converted EPUB has a different size; positions must be taken on
+        // the server's current file (they are mapped to the Kobo's KEPUB from
+        // it), so the new file is fetched and replaces the stored copy.
+        const local = offlineCopyRef.current;
+        const localFormat = local ? epubFormatOf(local.detail) : null;
+        const serverFormat = bookQuery.data ? epubFormatOf(bookQuery.data) : null;
+        const localIsCurrent = !!local && (!serverFormat
+          || serverFormat.size_bytes === localFormat?.size_bytes);
+        let buf: ArrayBuffer;
+        if (local && localIsCurrent) {
+          buf = await local.epub.arrayBuffer();
+        } else {
+          const res = await fetch(resourceUrl(epubContentUrl), { credentials: 'include' });
+          if (!res.ok) throw new Error(t('Could not load the book file ({status})', { status: res.status }));
+          buf = await res.arrayBuffer();
+          if (local && bookQuery.data && !lookupModeRef.current) {
+            const epub = new Blob([buf], { type: 'application/epub+zip' });
+            void putOfflineBook({
+              ...local, detail: bookQuery.data, epub,
+              size: epub.size + (local.cover?.size ?? 0),
+              downloadedAt: new Date().toISOString(),
+            }).catch(() => {});
+          }
+        }
         if (cancelled) return;
         archiveRef.current = buf;
 
@@ -2102,7 +2167,7 @@ export function Reader({ id }: { id: string }) {
     };
     // Re-render only when the source changes; theme/font are applied imperatively.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [epubContentUrl, isBookmarkFetched, isSettingsFetched, isFontsFetched, settingsHydrated]);
+  }, [epubContentUrl, isBookmarkFetched, isSettingsFetched, isFontsFetched, settingsHydrated, offline.loaded]);
 
   // Apply theme / font changes to a live rendition without rebuilding it, and
   // remember the preference across sessions.
@@ -2205,7 +2270,9 @@ export function Reader({ id }: { id: string }) {
   if (error || !book) {
     return (
       <div className={styles.fullCenter}>
-        <EmptyState message={error instanceof Error ? error.message : t('Book not found.')} />
+        <EmptyState message={error && !(error instanceof ApiError) && !offline.copy
+          ? t('This book is not on this device. Download it while online to read it offline.')
+          : error instanceof Error ? error.message : t('Book not found.')} />
         <Link href="/" className={styles.exitLink}>{t('← Library')}</Link>
       </div>
     );

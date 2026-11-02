@@ -36,7 +36,7 @@ export async function sendPendingPosition(position: PendingPosition): Promise<Se
 function openStore(): OutboxStore {
   if (typeof indexedDB === 'undefined') return createMemoryStore();
   const db = openOfflineDb();
-  const durable = createIdbStore(db);
+  const durable = createIdbStore(openOfflineDb);
   const fallback = createMemoryStore();
   // Private modes can refuse IndexedDB. Positions then live only as long as
   // the page, which is still better than failing the save.
