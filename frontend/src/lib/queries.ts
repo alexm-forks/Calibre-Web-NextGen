@@ -1658,6 +1658,7 @@ export function useSaveBookmark(bookId: string | number) {
       bookmark: string;
       percentage?: number;
       share_with_devices?: boolean;
+      observed_at?: string;
     }) =>
       apiPost(`/api/v1/books/${bookId}/bookmark`, vars),
     // #1318: deliberately NO react-query `retry` here. The route now answers
