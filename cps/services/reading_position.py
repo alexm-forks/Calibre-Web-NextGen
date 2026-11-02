@@ -89,9 +89,42 @@ def coerce_percentage(raw) -> Optional[float]:
     return value
 
 
+class InvalidObservedAt(ValueError):
+    """``observed_at`` was supplied but is not an ISO-8601 timestamp."""
+
+
+def coerce_observed_at(raw, now=None) -> Optional[datetime]:
+    """Parse the client's "this is when the reader was here" timestamp.
+
+    An installed web app queues positions while offline and sends them later,
+    so the time of the request is not the time of the reading. The client
+    sends when it saw the position (ISO 8601; ``Z`` or an offset; a naive
+    value is taken as UTC). ``None`` means the client did not say, and callers
+    keep using the receipt time as before.
+
+    A clock ahead of the server is capped at ``now``: a position cannot have
+    been read in the future, and the place arbiter applies its own five-minute
+    skew rule to the journal anyway. There is no lower bound. A save queued
+    for days really is days old, and arbitration must see it that way.
+    """
+    if raw is None or raw == "":
+        return None
+    if not isinstance(raw, str):
+        raise InvalidObservedAt("observed_at must be an ISO-8601 string")
+    try:
+        value = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError as e:
+        raise InvalidObservedAt(str(e)) from None
+    value = (value.replace(tzinfo=timezone.utc) if value.tzinfo is None
+             else value.astimezone(timezone.utc))
+    now = now or datetime.now(timezone.utc)
+    return min(value, now)
+
+
 def record_web_reader_progress(user, book_id: int, percentage: float,
                                *, origin_device_id=None, cfi=None,
-                               share_with_devices=True, fmt="epub") -> bool:
+                               share_with_devices=True, fmt="epub",
+                               client_at=None) -> bool:
     """Record a Browser position and, by default, advance shared carriers.
 
     Returns ``True`` when the Browser journal was recorded without sharing or
@@ -105,6 +138,10 @@ def record_web_reader_progress(user, book_id: int, percentage: float,
         classic reader produces before ``epub.locations.generate()`` resolves
         (CWA #1364), and it carries no cross-device information either way.
       * a device has already reported an equal or further position.
+
+    ``client_at`` (from ``coerce_observed_at``) is when the browser saw the
+    position. It orders this report against other devices' reports; the
+    receipt time stays the server's own clock. ``None`` means "now".
     """
     if percentage is None or percentage <= MIN_PERCENT:
         return False
@@ -153,6 +190,7 @@ def record_web_reader_progress(user, book_id: int, percentage: float,
         return _record_gated_progress(
             user, book_id, percentage, origin_device_id, cfi, fmt,
             share_with_devices=share_with_devices, checked=mode,
+            client_at=client_at,
         )
 
     # Status remains an independent manual-intent guard. Position acceptance is
@@ -173,7 +211,7 @@ def record_web_reader_progress(user, book_id: int, percentage: float,
     # exact epub.js CFI is intentionally private to this browser row; Kobo and
     # KOReader continue to receive only the portable percentage.
     if origin_device_id:
-        observed_at = datetime.now(timezone.utc)
+        observed_at = client_at or datetime.now(timezone.utc)
         try:
             with ub.begin_contained_nested(ub.session):
                 stage_position(
@@ -451,7 +489,7 @@ def record_gated_reader_open(user, book_id):
 
 
 def _record_gated_progress(user, book_id, percentage, device_id, cfi, fmt,
-                           *, share_with_devices, checked):
+                           *, share_with_devices, checked, client_at=None):
     from .place_journal import write_report
     from .place_arbiter import Report
     from .kosync_place import latest_write, shared_report
@@ -460,13 +498,17 @@ def _record_gated_progress(user, book_id, percentage, device_id, cfi, fmt,
         PERCENTAGE_ONLY_LOCATOR, WEB_READER_DEVICE, get_book_checksums,
         get_progress_record, read_status_for_percentage, update_book_read_status,
     )
-    observed_at = datetime.now(timezone.utc)
+    # Two clocks: when the reader was at this place (the client's, for a save
+    # queued offline) and when the server received it. The arbiter orders
+    # reports by the first and breaks ties with the second.
+    received_at = datetime.now(timezone.utc)
+    observed_at = client_at or received_at
     status = read_status_for_percentage(percentage)
     try:
         with ub.begin_contained_nested(ub.session):
             own = write_report(
                 device_id=device_id, book_id=book_id, client_at=observed_at,
-                received_at=observed_at,
+                received_at=received_at,
                 place=dict(progress_percent=percentage, cfi=cfi,
                            location_source=None, location_type=None, location_value=None),
                 status=status, status_supplied=True,
@@ -503,9 +545,9 @@ def _record_gated_progress(user, book_id, percentage, device_id, cfi, fmt,
                 dict(progress=PERCENTAGE_ONLY_LOCATOR, percentage=percentage,
                      device=WEB_READER_DEVICE, device_id=None,
                      web_cfi=cfi if fmt == "epub" else None,
-                     timestamp=observed_at, client_modified_at=observed_at),
+                     timestamp=received_at, client_modified_at=observed_at),
                 client_column="client_modified_at", server_column="timestamp",
-                candidate=Report(observed_at, observed_at),
+                candidate=Report(observed_at, received_at),
             ):
                 return False
             ub.session.query(KOSyncProgress).filter(
@@ -515,7 +557,7 @@ def _record_gated_progress(user, book_id, percentage, device_id, cfi, fmt,
             outcome = update_book_read_status(
                 user, book_id, percentage, shared_accepted=True,
                 client_at=observed_at, web_report=True, source_cfi=cfi, source_format=fmt,
-                report_received_at=observed_at,
+                report_received_at=received_at,
                 web_status_accepted=own.status_accepted,
             )
             return outcome.accepted
