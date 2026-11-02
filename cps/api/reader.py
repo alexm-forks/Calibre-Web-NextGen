@@ -102,6 +102,29 @@ def save_bookmark(book_id):
     data = request.get_json(silent=True) or {}
     fmt = (data.get("format") or "epub").lower()
     bookmark_key = data.get("bookmark") or ""
+    # When the reader was at this place. The installed web app queues saves
+    # while offline and sends them later, so it says when each was made; the
+    # time of this request may be hours after the reading.
+    try:
+        observed_at = reading_position.coerce_observed_at(data.get("observed_at"))
+    except reading_position.InvalidObservedAt:
+        return _err("invalid_observed_at", "observed_at must be an ISO-8601 timestamp", 400)
+
+    if bookmark_key and observed_at is not None:
+        current = _naive_utc(_current_bookmark_updated_at(book_id, fmt))
+        stamp = _naive_utc(observed_at)
+        if current is not None and current >= stamp:
+            existing_key = (ub.session.query(ub.Bookmark.bookmark_key)
+                            .filter(_bookmark_filter(book_id, fmt)).scalar())
+            if current == stamp and existing_key == bookmark_key:
+                # The same save again: a retry after a lost response, or the
+                # page-close send racing the queued one. It already landed.
+                return "", 204
+            # Older than the place already saved for this book (another tab or
+            # device moved on while this one was offline). The saved place
+            # stays; the device journal still records this device's report,
+            # and arbitration keeps it from overriding newer shared places.
+            return _share_without_bookmark(book_id, fmt, bookmark_key, data, observed_at)
 
     # Replace-on-write: one bookmark per (user, book, format), like the legacy route.
     ub.session.query(ub.Bookmark).filter(_bookmark_filter(book_id, fmt)).delete()
@@ -121,6 +144,9 @@ def save_bookmark(book_id):
         # #324: share the portable half of the position (the percentage) with the
         # user's other devices. Mirrors the legacy route so both readers behave
         # the same. Only on a save — an empty bookmark is a clear.
+        # #324: share the portable half of the position (the percentage) with the
+        # user's other devices. Mirrors the legacy route so both readers behave
+        # the same. Only on a save — an empty bookmark is a clear.
         percentage = reading_position.coerce_percentage(data.get("percentage"))
         if percentage is not None:
             try:
@@ -135,17 +161,59 @@ def save_bookmark(book_id):
                     # the reader chooses to continue there, create/update only
                     # the Browser source rather than rewriting device carriers.
                     share_with_devices=data.get("share_with_devices", True) is not False,
+                    client_at=observed_at,
                 )
             except Exception as e:
                 # Position sharing must never cost the user their bookmark.
                 log.warning("Could not share web reader progress for book %s: %s", book_id, e)
 
         # Stamp after sharing: our own mirror must never supersede this CFI.
-        row.updated_at = datetime.now(timezone.utc)
+        # A save that says when it was made keeps that time, so a later
+        # queued save from the same reading can still be ordered against it.
+        row.updated_at = observed_at or datetime.now(timezone.utc)
 
     # The SPA debounces one of these every 800ms; answering 204 on a rolled-back
     # write drops the position silently and tells the client not to retry.
     if not ub.session_commit("Bookmark for user {} in book {} via api".format(current_user.id, book_id)):
+        return "", 500
+    return "", 204
+
+
+def _naive_utc(value):
+    """SQLite hands DateTime back naive (UTC); compare like with like."""
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _current_bookmark_updated_at(book_id, fmt):
+    return (ub.session.query(ub.Bookmark.updated_at)
+            .filter(_bookmark_filter(book_id, fmt))
+            .order_by(ub.Bookmark.updated_at.desc())
+            .limit(1).scalar())
+
+
+def _share_without_bookmark(book_id, fmt, bookmark_key, data, observed_at):
+    """A late save: journal this device's report, leave the saved CFI alone.
+
+    Nothing of the route's own is written, so there is nothing to settle
+    before the progress savepoint (compare save_bookmark, #1318)."""
+    percentage = reading_position.coerce_percentage(data.get("percentage"))
+    if percentage is not None:
+        try:
+            reading_position.record_web_reader_progress(
+                current_user, book_id, percentage,
+                origin_device_id=g.annotation_origin_device_id,
+                cfi=bookmark_key, fmt=fmt,
+                share_with_devices=data.get("share_with_devices", True) is not False,
+                client_at=observed_at,
+            )
+        except Exception as e:
+            log.warning("Could not record late web reader progress for book %s: %s", book_id, e)
+    if not ub.session_commit("Late bookmark report for user {} in book {} via api".format(
+            current_user.id, book_id)):
         return "", 500
     return "", 204
 
