@@ -50,6 +50,12 @@ user_accessed = _signals.signal("accessed")
 #: the app.
 session_protected = _signals.signal("session-protected")
 
+#: CWNG: sent when a rolling remember cookie (login_user(rolling=True)) is
+#: issued or renewed, with ``user_id``, ``random`` and ``seconds`` (its
+#: lifetime). Lets the app keep any server-side record of the login alive for
+#: as long as the cookie.
+remember_cookie_renewed = _signals.signal("remember-cookie-renewed")
+
 
 def __getattr__(name):
     if name == "user_loaded_from_header":

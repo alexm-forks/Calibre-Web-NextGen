@@ -34,6 +34,7 @@ Usage:
 import json
 import requests
 import os
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlsplit
 
@@ -642,6 +643,27 @@ def oauth_update_token(provider_id, token, provider_user_id):
 _REMEMBER_OFF_VALUES = ("", "0", "false", "no", "off")
 
 
+OAUTH_REMEMBER_DAYS_DEFAULT = 30
+
+
+def oauth_remember_duration():
+    """How long a provider login stays signed in without a visit.
+
+    A rolling lifetime (renewed while in use), shorter than the password
+    form's fixed 365 days, in the shape other OIDC apps use (Grafana: 30 days
+    total, 7 idle). CWNG_OAUTH_REMEMBER_DAYS sets it, 1-365; anything else
+    falls back to 30.
+    """
+    raw = (os.environ.get("CWNG_OAUTH_REMEMBER_DAYS") or "").strip()
+    try:
+        days = int(raw) if raw else OAUTH_REMEMBER_DAYS_DEFAULT
+    except ValueError:
+        days = OAUTH_REMEMBER_DAYS_DEFAULT
+    if not 1 <= days <= 365:
+        days = OAUTH_REMEMBER_DAYS_DEFAULT
+    return timedelta(days=days)
+
+
 def oauth_login_remembered():
     """Whether an OAuth/OIDC login gets "remember me".
 
@@ -680,7 +702,10 @@ def bind_oauth_or_register(provider_id, provider_user_id, redirect_url, provider
                 log.warning("User %s tried to link OAuth account already bound to user %s",
                             current_user.id, oauth_entry.user_id)
                 return redirect(url_for('web.profile'))
-            login_user(oauth_entry.user, remember=oauth_login_remembered())
+            remembered = oauth_login_remembered()
+            login_user(oauth_entry.user, remember=remembered,
+                       duration=oauth_remember_duration() if remembered else None,
+                       rolling=remembered)
             log.debug("You are now logged in as: '%s'", oauth_entry.user.name)
             flash(_("Success! You are now logged in as: %(nickname)s", nickname=oauth_entry.user.name),
                   category="success")

@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # See CONTRIBUTORS for full list of authors.
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -155,7 +156,8 @@ def test_successful_oauth_binding_uses_saved_next_and_clears_flow_state():
                 "generic",
             )
 
-        login_user.assert_called_once_with(user, remember=True)
+        login_user.assert_called_once_with(
+            user, remember=True, duration=timedelta(days=30), rolling=True)
         assert response.status_code == 302
         assert response.location.endswith("/book/1")
         assert (
