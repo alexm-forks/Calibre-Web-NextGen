@@ -147,10 +147,11 @@
   color: var(--on-accent);
 }
 
-/* In fullscreen the reader IS the screen, so paint the page background behind
- * it — the UA default is black and would letterbox a light or sepia page. */
-.reader:fullscreen { background: inherit; }
-.reader:-webkit-full-screen { background: inherit; }
+/* In fullscreen the reader IS the screen. Its theme class (.bg_*) keeps painting
+ * the page colour behind the book and the page-turn zones: author styles beat
+ * the browser's black fullscreen default. A `background: inherit` here used to
+ * outrank the theme class and pull in the dark app background instead, which
+ * showed as dark bars either side of a light or sepia page. */
 
 /* Stage holds the epub viewer flanked by page-turn zones. */
 .stage {
