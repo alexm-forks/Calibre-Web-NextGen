@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, type ReactNode } from 'react';
+import { flushPositionsNow } from './lib/offline/positionSync';
 import { Router, Route, Switch, useLocation, useSearch } from 'wouter';
 import { RouteA11y } from './lib/a11y/useRouteA11y';
 import { BASE_PREFIX, type AdvancedSearchParams } from './lib/api';
@@ -125,6 +126,15 @@ export function App() {
     if (display) root.style.setProperty('--font-display', display);
     else root.style.removeProperty('--font-display');
   }, [me?.ui_font_body, me?.ui_font_display]);
+
+  // Positions saved while signed out (or offline) wait in the device's queue
+  // (lib/offline/positionSync.ts). Send them as soon as someone is signed in:
+  // a password sign-in doesn't reload the page, so the start-up send has
+  // already happened and the next timed retry could be a minute away.
+  const signedInId = me && !me.role?.anonymous ? me.id : null;
+  useEffect(() => {
+    if (signedInId !== null) flushPositionsNow();
+  }, [signedInId]);
 
   // Apply the user's saved palette after authentication. The pre-boot script
   // handles the logged-out/loading tree; this keeps it current once `me` loads.
