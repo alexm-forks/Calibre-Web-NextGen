@@ -639,6 +639,24 @@ def oauth_update_token(provider_id, token, provider_user_id):
     return backend_resultcode
 
 
+_REMEMBER_OFF_VALUES = ("", "0", "false", "no", "off")
+
+
+def oauth_login_remembered():
+    """Whether an OAuth/OIDC login gets "remember me".
+
+    The sign-in form's "Remember me" is ticked by default, but it only exists
+    for the password form: a provider button has no checkbox, and an instance
+    that disables password login or redirects straight to its provider shows
+    none at all. Such logins used to end with the browser session, so an
+    installed web app the phone closed in the background meant signing in at
+    the provider again. They now match the form's default. CWNG_OAUTH_REMEMBER
+    set to empty/0/false/no/off keeps provider logins to the browser session.
+    """
+    value = os.environ.get("CWNG_OAUTH_REMEMBER")
+    return value is None or value.strip().lower() not in _REMEMBER_OFF_VALUES
+
+
 def bind_oauth_or_register(provider_id, provider_user_id, redirect_url, provider_name):
     """Bind OAuth account to user or handle login"""
     if not provider_user_id:
@@ -662,7 +680,7 @@ def bind_oauth_or_register(provider_id, provider_user_id, redirect_url, provider
                 log.warning("User %s tried to link OAuth account already bound to user %s",
                             current_user.id, oauth_entry.user_id)
                 return redirect(url_for('web.profile'))
-            login_user(oauth_entry.user)
+            login_user(oauth_entry.user, remember=oauth_login_remembered())
             log.debug("You are now logged in as: '%s'", oauth_entry.user.name)
             flash(_("Success! You are now logged in as: %(nickname)s", nickname=oauth_entry.user.name),
                   category="success")
