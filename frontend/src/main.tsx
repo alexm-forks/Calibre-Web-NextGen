@@ -9,6 +9,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { AuthTransitionError, navigateToLogout, BASE_PREFIX } from './lib/api';
 import { createQueryClient } from './lib/queryClient';
 import { registerServiceWorker } from './lib/pwa';
+import { startPositionSync } from './lib/offline/positionSync';
 
 // Protected wrappers normalize every auth-loss shape and start the canonical
 // top-level logout navigation. Keep the cache transition here so no stale
@@ -40,3 +41,5 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
 );
 
 registerServiceWorker();
+// Send reading positions saved while offline (lib/offline/positionSync.ts).
+startPositionSync();

@@ -15,7 +15,8 @@ import {
   type ReaderSettings, isWorthResending, useBook, useBookmark, useReaderSettings,
   useReadingSources, useRecordReaderOpen, useSaveBookmark, useSaveReaderSettings, useReaderFonts, type ReadingSource,
 } from '../lib/queries';
-import { apiPost, apiDelete, apiPatch, apiUrl, resourceUrl } from '../lib/api';
+import { ApiError, apiPost, apiDelete, apiPatch, apiUrl, resourceUrl } from '../lib/api';
+import { positionOutbox } from '../lib/offline/positionSync';
 import { Button } from '../components/Button';
 import { EmptyState } from '../components/EmptyState';
 import { VisuallyHidden } from '../components/VisuallyHidden';
@@ -393,6 +394,9 @@ export function Reader({ id }: { id: string }) {
   const settingsPendingRef = useRef<Partial<ReaderSettings>>({});
   const lastCfiRef = useRef<string | null>(null);
   const lastPercentRef = useRef<number | null>(null);
+  // When the reader reached lastCfiRef's place. Sent with every save so the
+  // server can order a save that arrives late (offline queue, keepalive).
+  const lastObservedRef = useRef<string | null>(null);
   const lastShareWithDevicesRef = useRef(true);
   const sourceModeRef = useRef<'none' | 'preview' | 'browser'>('none');
   const saveRetries = useRef(0);
@@ -1273,21 +1277,31 @@ export function Reader({ id }: { id: string }) {
     const cfi = lastCfiRef.current;
     if (!cfi) return;
     const pct = lastPercentRef.current;
+    const observedAt = lastObservedRef.current;
     saveInFlight.current = true;
     // mutateAsync, not mutate(…, {onError}): per-call callbacks only fire for the
     // latest observed mutation and are dropped entirely if the reader unmounts
     // first, so the retry bookkeeping would silently stop happening.
     saveBookmark.mutateAsync(
-      readerBookmarkBody(cfi, pct, lastShareWithDevicesRef.current),
+      readerBookmarkBody(cfi, pct, lastShareWithDevicesRef.current, observedAt),
     ).then(() => {
       saveRetries.current = 0;
       saveFailureAnnounced.current = false;
+      // The server has it: drop it (and anything older) from the offline queue.
+      if (observedAt) void positionOutbox().settle(Number(id), 'epub', observedAt).catch(() => {});
     }).catch((error: unknown) => {
       if (isWorthResending(error) && saveRetries.current < MAX_SAVE_RETRIES) {
         saveRetries.current += 1;
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = setTimeout(
           flushCfiSave, Math.min(1000 * 2 ** saveRetries.current, 8000));
+        return;
+      }
+      // No connection: the position is already in the offline queue, which
+      // sends it when the app is next online. Nothing was lost, so nothing
+      // to announce.
+      if (!(error instanceof ApiError) && observedAt) {
+        saveRetries.current = 0;
         return;
       }
       // Out of attempts, or a refusal re-sending cannot change. Tell the reader
@@ -1307,7 +1321,7 @@ export function Reader({ id }: { id: string }) {
         flushCfiSave();
       }
     });
-  }, [saveBookmark, announce, t]);
+  }, [saveBookmark, announce, t, id]);
 
   const persistCfi = useCallback(
     (cfi: string, percentage?: number) => {
@@ -1329,6 +1343,15 @@ export function Reader({ id }: { id: string }) {
         : null;
       lastPercentRef.current = valid;
       lastShareWithDevicesRef.current = sourceModeRef.current !== 'browser';
+      // Queue it on the device first, so it survives going offline, a failed
+      // send or the tab closing before the debounce fires.
+      const observedAt = new Date().toISOString();
+      lastObservedRef.current = observedAt;
+      void positionOutbox().record({
+        bookId: Number(id), format: 'epub', bookmark: cfi,
+        ...(valid != null ? { percentage: valid } : {}),
+        shareWithDevices: lastShareWithDevicesRef.current, observedAt,
+      }).catch(() => {});
       // A fresh position supersedes any pending retry: the newest place is what
       // we want on the server, and it resets the attempt budget.
       saveRetries.current = 0;
@@ -1338,7 +1361,7 @@ export function Reader({ id }: { id: string }) {
         flushCfiSave();
       }, 800);
     },
-    [flushCfiSave],
+    [flushCfiSave, id],
   );
 
   const applyTheme = useCallback((t: ReaderTheme) => {
@@ -2014,7 +2037,8 @@ export function Reader({ id }: { id: string }) {
           const pct = lastPercentRef.current;
           void apiPost(
             `/api/v1/books/${id}/bookmark`,
-            readerBookmarkBody(cfi, pct, lastShareWithDevicesRef.current),
+            readerBookmarkBody(cfi, pct, lastShareWithDevicesRef.current,
+              lastObservedRef.current),
             { keepalive: true },
           );
         }
