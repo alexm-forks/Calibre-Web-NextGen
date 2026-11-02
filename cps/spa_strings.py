@@ -2236,3 +2236,14 @@ _("Merge one copy into “{title}”? Formats it lacks are copied over, then tha
 _("Merge {n} copies into “{title}”? Formats it lacks are copied over, then those copies are deleted.")
 _("Merged into “{title}”.")
 _("Could not merge these books.")
+
+# Offline reading: books downloaded to this device (frontend/src/lib/offline).
+_("Could not download this book for offline reading.")
+_("Download for offline")
+_("Downloading…")
+_("Remove from this device")
+_("Remove this book from this device? You can download it again while online.")
+_("This book is not on this device. Download it while online to read it offline.")
+_("You are offline. These books can still be read.")
+_("Your browser may remove these books if the device runs low on space.")
+_("{count} books · {size}")

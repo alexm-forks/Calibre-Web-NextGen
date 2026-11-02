@@ -9,19 +9,23 @@ import {
 } from './positionOutbox.ts';
 
 const DB_NAME = 'cwng-offline';
-const DB_VERSION = 1;
+// v1: positions (the outbox). v2: books (downloaded for offline reading) and
+// places (the last place reached in each book on this device).
+const DB_VERSION = 2;
 const POSITIONS = 'positions';
+export const BOOKS = 'books';
+export const PLACES = 'places';
 
 interface Row extends PendingPosition { key: string }
 
-function promisify<T>(request: IDBRequest<T>): Promise<T> {
+export function promisify<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
 }
 
-function done(tx: IDBTransaction): Promise<void> {
+export function done(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => resolve();
     tx.onabort = () => reject(tx.error);
@@ -29,7 +33,18 @@ function done(tx: IDBTransaction): Promise<void> {
   });
 }
 
+let shared: Promise<IDBDatabase> | null = null;
+
+/** One connection per page; a failed open is retried on the next call. */
 export function openOfflineDb(): Promise<IDBDatabase> {
+  if (!shared) {
+    shared = openOnce();
+    shared.catch(() => { shared = null; });
+  }
+  return shared;
+}
+
+function openOnce(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
@@ -37,8 +52,19 @@ export function openOfflineDb(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(POSITIONS)) {
         db.createObjectStore(POSITIONS, { keyPath: 'key' });
       }
+      if (!db.objectStoreNames.contains(BOOKS)) {
+        db.createObjectStore(BOOKS, { keyPath: 'key' });
+      }
+      if (!db.objectStoreNames.contains(PLACES)) {
+        db.createObjectStore(PLACES, { keyPath: 'key' });
+      }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Another tab upgrading the schema: let it, and reopen next time.
+      db.onversionchange = () => { db.close(); shared = null; };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('cwng-offline database upgrade blocked'));
   });
@@ -49,20 +75,20 @@ function strip(row: Row): PendingPosition {
   return position;
 }
 
-export function createIdbStore(dbPromise: Promise<IDBDatabase>): OutboxStore {
+export function createIdbStore(openDb: () => Promise<IDBDatabase> = openOfflineDb): OutboxStore {
   return {
     async all() {
-      const db = await dbPromise;
+      const db = await openDb();
       const rows = await promisify(db.transaction(POSITIONS).objectStore(POSITIONS).getAll());
       return (rows as Row[]).map(strip);
     },
     async get(key) {
-      const db = await dbPromise;
+      const db = await openDb();
       const row = await promisify(db.transaction(POSITIONS).objectStore(POSITIONS).get(key));
       return row ? strip(row as Row) : undefined;
     },
     async putIfNewer(position) {
-      const db = await dbPromise;
+      const db = await openDb();
       const tx = db.transaction(POSITIONS, 'readwrite');
       const store = tx.objectStore(POSITIONS);
       const key = outboxKey(position.bookId, position.format);
@@ -77,7 +103,7 @@ export function createIdbStore(dbPromise: Promise<IDBDatabase>): OutboxStore {
       return written;
     },
     async removeIfNotNewer(key, observedAt) {
-      const db = await dbPromise;
+      const db = await openDb();
       const tx = db.transaction(POSITIONS, 'readwrite');
       const store = tx.objectStore(POSITIONS);
       const current = await promisify(store.get(key)) as Row | undefined;
