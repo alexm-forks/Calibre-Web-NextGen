@@ -155,7 +155,7 @@ def test_successful_oauth_binding_uses_saved_next_and_clears_flow_state():
                 "generic",
             )
 
-        login_user.assert_called_once_with(user)
+        login_user.assert_called_once_with(user, remember=True)
         assert response.status_code == 302
         assert response.location.endswith("/book/1")
         assert (
