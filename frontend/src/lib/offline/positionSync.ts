@@ -62,16 +62,19 @@ export function positionOutbox(): PositionOutbox {
 
 let started = false;
 
+/** Send pending positions now, if the browser thinks it is online. */
+export function flushPositionsNow(): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+  positionOutbox().flush().catch((err: unknown) => {
+    console.warn('CWNG: sending saved reading positions failed', err);
+  });
+}
+
 /** Begin flushing pending positions whenever there is a chance to. Idempotent. */
 export function startPositionSync(): void {
   if (started || typeof window === 'undefined') return;
   started = true;
-  const flush = () => {
-    if (navigator.onLine === false) return;
-    positionOutbox().flush().catch((err: unknown) => {
-      console.warn('CWNG: sending saved reading positions failed', err);
-    });
-  };
+  const flush = flushPositionsNow;
   flush();
   window.addEventListener('online', flush);
   document.addEventListener('visibilitychange', () => {
