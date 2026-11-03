@@ -177,6 +177,10 @@
   flex: 1 1 auto;
   height: 100%;
   min-width: 0;
+  /* Sideways swipes belong to the reader (page turns), not the browser's
+     scroller: Firefox's panning takes a horizontal gesture over anything that
+     can scroll sideways, as the epub.js chapter strip can, and cancels it. */
+  touch-action: pan-y pinch-zoom;
 }
 
 .navZone {
