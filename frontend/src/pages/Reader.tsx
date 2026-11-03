@@ -323,6 +323,35 @@ function applyDocumentTypography(doc: Document, settings: {
 
 const READER_LINE_HEIGHT_STYLE_ID = 'cwng-reader-line-height';
 
+/** epub.js's fixed gap above and below the text on each page. */
+const PAGE_EDGE_PX = 20;
+
+/**
+ * Centre the text vertically on the page. A page holds whole lines only, so
+ * whatever height is left after the last whole line sat at the bottom: with
+ * large line spacing that is most of a line, under epub.js's small fixed top
+ * gap, so the text looked jammed against the top with a hole at the bottom.
+ * Split the leftover between top and bottom. Re-run after every layout, since
+ * epub.js resets these paddings when it lays the page out again.
+ */
+function balancePageLines(doc: Document | undefined) {
+  const view = doc?.defaultView;
+  const html = doc?.documentElement;
+  if (!doc || !view || !html || !doc.body) return;
+  const height = view.innerHeight;
+  // A paragraph's line, where there is one: books often size body text a
+  // little differently from <body>, and it is the body text that fills pages.
+  const sample = doc.body.querySelector('p') || doc.body;
+  const line = parseFloat(view.getComputedStyle(sample).lineHeight);
+  if (!(height > 0) || !(line > 0)) return;
+  const usable = height - 2 * PAGE_EDGE_PX;
+  if (usable <= line) return;
+  const spare = usable - Math.floor(usable / line) * line;
+  const edge = `${PAGE_EDGE_PX + spare / 2}px`;
+  html.style.setProperty('padding-top', edge, 'important');
+  html.style.setProperty('padding-bottom', edge, 'important');
+}
+
 function loadTheme(): ReaderThemeChoice {
   const v = safeLocalStorageGet(LS_THEME);
   if (v === 'system') return 'system';
@@ -1495,6 +1524,7 @@ export function Reader({ id }: { id: string }) {
       (rendition.getContents?.() || []).forEach((c: any) => {
         if (!c?.document?.body) return;
         applyDocumentTypography(c.document, { fontPct, fontCssFamily, margin, lineHeight });
+        balancePageLines(c.document);
       });
     } catch { /* same-origin blob content; guard regardless */ }
     // Recalculate the paginator after all typography changes, then keep the
@@ -1911,24 +1941,65 @@ export function Reader({ id }: { id: string }) {
             const selection = doc.getSelection?.();
             return !!selection && !selection.isCollapsed;
           };
-          let start: { x: number; y: number; at: number } | null = null;
-          doc.addEventListener('touchstart', (event: TouchEvent) => {
+          // Keep sideways movement for the reader: the chapter is one wide,
+          // sideways-scrollable strip, and a browser that takes a horizontal
+          // swipe as a pan (Firefox for Android) cancels the touch instead of
+          // ending it. Vertical panning and pinch-zoom stay with the browser.
+          if (!doc.getElementById('cwng-reader-touch')) {
+            const touchStyle = doc.createElement('style');
+            touchStyle.id = 'cwng-reader-touch';
+            touchStyle.textContent = 'html, body { touch-action: pan-y pinch-zoom !important; }';
+            (doc.head || doc.documentElement).appendChild(touchStyle);
+          }
+          // One gesture, seen through touch events and pointer events alike
+          // (engines differ in which they deliver into the frame). Whichever
+          // ends it first turns the page; the other is ignored. A cancelled
+          // gesture is judged by the last position seen.
+          let gesture: { x: number; y: number; at: number; lastX: number; lastY: number } | null = null;
+          const begin = (x: number, y: number) => {
             frameTouchSeenRef.current = true;
-            const touch = event.touches.length === 1 ? event.touches[0] : null;
-            start = touch ? { x: touch.clientX, y: touch.clientY, at: Date.now() } : null;
-          }, { passive: true });
-          doc.addEventListener('touchend', (event: TouchEvent) => {
-            const from = start;
-            start = null;
-            const touch = event.changedTouches.length === 1 ? event.changedTouches[0] : null;
-            if (!from || !touch || !swipeOnRef.current || selecting()) return;
-            const dx = touch.clientX - from.x;
-            const dy = touch.clientY - from.y;
+            gesture = { x, y, at: Date.now(), lastX: x, lastY: y };
+          };
+          const move = (x: number, y: number) => {
+            if (gesture) { gesture.lastX = x; gesture.lastY = y; }
+          };
+          const finish = (x?: number, y?: number) => {
+            const g = gesture;
+            gesture = null;
+            if (!g || !swipeOnRef.current || selecting()) return;
+            const dx = (x ?? g.lastX) - g.x;
+            const dy = (y ?? g.lastY) - g.y;
             if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5
-              || Date.now() - from.at > SWIPE_MAX_MS) return;
+              || Date.now() - g.at > SWIPE_MAX_MS) return;
+            if (Date.now() - swipedAtRef.current < 300) return;
             swipedAtRef.current = Date.now();
             turnByTouchRef.current(dx < 0 ? goRightRef.current : goLeftRef.current);
+          };
+          doc.addEventListener('touchstart', (event: TouchEvent) => {
+            const touch = event.touches.length === 1 ? event.touches[0] : null;
+            if (touch) begin(touch.clientX, touch.clientY); else gesture = null;
           }, { passive: true });
+          doc.addEventListener('touchmove', (event: TouchEvent) => {
+            const touch = event.touches.length === 1 ? event.touches[0] : null;
+            if (touch) move(touch.clientX, touch.clientY);
+          }, { passive: true });
+          doc.addEventListener('touchend', (event: TouchEvent) => {
+            const touch = event.changedTouches.length === 1 ? event.changedTouches[0] : null;
+            if (touch) finish(touch.clientX, touch.clientY); else gesture = null;
+          }, { passive: true });
+          doc.addEventListener('touchcancel', () => finish(), { passive: true });
+          doc.addEventListener('pointerdown', (event: PointerEvent) => {
+            if (event.pointerType === 'touch' && event.isPrimary && !gesture) begin(event.clientX, event.clientY);
+          });
+          doc.addEventListener('pointermove', (event: PointerEvent) => {
+            if (event.pointerType === 'touch' && event.isPrimary) move(event.clientX, event.clientY);
+          });
+          doc.addEventListener('pointerup', (event: PointerEvent) => {
+            if (event.pointerType === 'touch' && event.isPrimary) finish(event.clientX, event.clientY);
+          });
+          doc.addEventListener('pointercancel', (event: PointerEvent) => {
+            if (event.pointerType === 'touch' && event.isPrimary) finish();
+          });
           doc.addEventListener('click', (event: MouseEvent) => {
             // Links are taken by the capture listener below, which prevents
             // the default; a swipe can end in a click on some engines.
@@ -2007,6 +2078,15 @@ export function Reader({ id }: { id: string }) {
             f.setAttribute('title', t('Book content'));
           });
         });
+        // After each layout (a section shown, a resize such as entering full
+        // screen, a typography change), centre the lines vertically again.
+        const balanceAll = () => {
+          const contents = rendition.getContents?.() as unknown;
+          (Array.isArray(contents) ? contents : contents ? [contents] : [])
+            .forEach((c: any) => balancePageLines(c?.document));
+        };
+        rendition.on('rendered', balanceAll);
+        rendition.on('resized', balanceAll);
 
         setRemoteResume(null);
         // Only a book with no local CFI waits for locations before first display.
