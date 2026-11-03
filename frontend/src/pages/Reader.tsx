@@ -281,7 +281,20 @@ function applyDocumentTypography(doc: Document, settings: {
   doc.body.style.setProperty('font-family',
     settings.fontCssFamily, 'important');
   doc.body.style.setProperty('line-height', String(settings.lineHeight / 100), 'important');
+  // The body value only reaches text that inherits it. Books commonly set
+  // their own line-height on paragraphs (Calibre conversions on a generated
+  // class), and an element's own rule beats inheritance, so the reader's
+  // setting barely changed those books. Make the text inherit it. Superscripts
+  // and subscripts keep the book's rule so note markers don't open up gaps.
+  if (!doc.getElementById(READER_LINE_HEIGHT_STYLE_ID)) {
+    const style = doc.createElement('style');
+    style.id = READER_LINE_HEIGHT_STYLE_ID;
+    style.textContent = 'body *:not(sup):not(sub):not(img):not(svg) { line-height: inherit !important; }';
+    (doc.head || doc.documentElement).appendChild(style);
+  }
 }
+
+const READER_LINE_HEIGHT_STYLE_ID = 'cwng-reader-line-height';
 
 function loadTheme(): ReaderTheme {
   const v = safeLocalStorageGet(LS_THEME);
