@@ -1558,7 +1558,7 @@ export function useSetCover(id: string | number) {
 // ── Reader (bookmark / progress) ─────────────────────────────────────────────
 
 export interface ReaderSettings {
-  theme: 'lightTheme' | 'sepiaTheme' | 'darkTheme' | 'blackTheme';
+  theme: 'lightTheme' | 'sepiaTheme' | 'darkTheme' | 'blackTheme' | 'systemTheme';
   /** Built-in IDs and server-validated custom:<uuid> catalog entries. */
   font: string;
   fontSize: number;

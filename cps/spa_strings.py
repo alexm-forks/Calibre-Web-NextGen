@@ -2248,3 +2248,8 @@ _("This book is not on this device. Download it while online to read it offline.
 _("You are offline. These books can still be read.")
 _("Your browser may remove these books if the device runs low on space.")
 _("{count} books · {size}")
+
+# Reader: follow the device's light/dark mode, and the swipe switch.
+_("Follow device")
+_("Page turns")
+_("Swipe to turn pages")

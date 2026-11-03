@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Canonical validation and defaults for per-user web-reader appearance."""
 
-READER_THEMES = {"lightTheme", "darkTheme", "sepiaTheme", "blackTheme"}
+# systemTheme: follow the device's light/dark mode (the new UI's reader).
+READER_THEMES = {"lightTheme", "darkTheme", "sepiaTheme", "blackTheme", "systemTheme"}
 READER_FONTS = {"default", "Yahei", "SimSun", "KaiTi", "Arial", "Literata"}
 READER_SPREADS = {"spread", "nonespread"}
 
