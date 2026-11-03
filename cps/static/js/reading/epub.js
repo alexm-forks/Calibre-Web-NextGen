@@ -395,8 +395,17 @@ var reader;
             }
         }, 0);
         // Theme
-        const theme = ReaderSettings.get("theme", "lightTheme");
-        if (typeof selectTheme === 'function') selectTheme(theme);
+        // "systemTheme" (follow the device, set in the new UI's reader) has no
+        // theme of its own here: show light or dark to match the device, and
+        // keep the saved choice as it is.
+        const savedTheme = ReaderSettings.get("theme", "lightTheme");
+        let theme = savedTheme;
+        if (theme === "systemTheme") {
+            theme = (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches)
+                ? "darkTheme" : "lightTheme";
+        }
+        if (!window.themes || !window.themes[theme]) theme = "lightTheme";
+        if (typeof selectTheme === 'function') selectTheme(theme, theme === savedTheme);
 
         // Font size
         let savedFontSize = ReaderSettings.get("fontSize", null);

@@ -7,7 +7,7 @@ import { useEffect, useRef, useState, useCallback, useId, useMemo } from 'react'
 import { Link, useSearch } from 'wouter';
 import ePub from 'epubjs';
 import {
-  ChevronLeft, ChevronRight, X, List, Sun, Moon, Coffee, Loader2, Trash2,
+  ChevronLeft, ChevronRight, X, List, Sun, SunMoon, Moon, Coffee, Loader2, Trash2,
   SlidersHorizontal, StickyNote, Highlighter, MoonStar, Maximize, Minimize,
   Search, MapPin,
 } from 'lucide-react';
@@ -104,6 +104,8 @@ const HILITE_FILL: Record<string, string> = {
 const UNKNOWN_FILL = '#d0cbc2';
 
 type ReaderTheme = 'light' | 'sepia' | 'dark' | 'black';
+/** What the reader picked: a theme, or follow the device's light/dark mode. */
+type ReaderThemeChoice = ReaderTheme | 'system';
 
 /** A saved highlight as the reader needs it: enough to list, jump to and edit. */
 interface AnnRow {
@@ -216,15 +218,36 @@ const FONT_MAX = 200;
 // told. Three attempts over ~14s covers the SQLite contention window that causes
 // these; past that it is not transient and silence would be the wrong answer.
 const MAX_SAVE_RETRIES = 3;
+// A swipe: mostly sideways, at least this far, and quick.
+const SWIPE_MIN_PX = 50;
+const SWIPE_MAX_MS = 800;
 const LS_THEME = 'cwng.reader.theme';
 const LS_FONT = 'cwng.reader.font';
 
-const THEME_TO_READER: Record<ReaderSettings['theme'], ReaderTheme> = {
+const THEME_TO_READER: Record<ReaderSettings['theme'], ReaderThemeChoice> = {
   lightTheme: 'light', sepiaTheme: 'sepia', darkTheme: 'dark', blackTheme: 'black',
+  systemTheme: 'system',
 };
-const READER_TO_THEME: Record<ReaderTheme, ReaderSettings['theme']> = {
+const READER_TO_THEME: Record<ReaderThemeChoice, ReaderSettings['theme']> = {
   light: 'lightTheme', sepia: 'sepiaTheme', dark: 'darkTheme', black: 'blackTheme',
+  system: 'systemTheme',
 };
+const LS_SWIPE = 'cwng.reader.swipe';
+
+/** Follow the device's light/dark setting, live. */
+function useDeviceDark(): boolean {
+  const query = '(prefers-color-scheme: dark)';
+  const [dark, setDark] = useState(() =>
+    typeof window !== 'undefined' && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia?.(query);
+    if (!media) return undefined;
+    const onChange = () => setDark(media.matches);
+    media.addEventListener('change', onChange);
+    return () => media.removeEventListener('change', onChange);
+  }, []);
+  return dark;
+}
 
 // Bundled reading-optimised serif. Content only gets font-family applied via
 // CSS (fontCssFamily / rendition.themes.font) — without an actual @font-face
@@ -300,8 +323,9 @@ function applyDocumentTypography(doc: Document, settings: {
 
 const READER_LINE_HEIGHT_STYLE_ID = 'cwng-reader-line-height';
 
-function loadTheme(): ReaderTheme {
+function loadTheme(): ReaderThemeChoice {
   const v = safeLocalStorageGet(LS_THEME);
+  if (v === 'system') return 'system';
   if (v === 'light' || v === 'sepia' || v === 'dark' || v === 'black') return v;
   // First reader visit follows the already-resolved per-user app palette.
   // Thereafter the reader's explicit page-theme choice remains independent.
@@ -507,6 +531,9 @@ export function Reader({ id }: { id: string }) {
   }, []);
 
   const [rendered, setRendered] = useState(false);
+  // Reading view: the toolbar floats over the page and hides on the first
+  // touch page turn; a tap in the middle of the page brings it back.
+  const [chromeHidden, setChromeHidden] = useState(false);
 
   // A device-manager deep link can request the drawer before the loading view
   // has mounted it. Open only after the reader exists so useFocusTrap can focus
@@ -549,7 +576,16 @@ export function Reader({ id }: { id: string }) {
   useEffect(() => {
     if (!settingsOpen) appearanceAnchorRef.current = undefined;
   }, [settingsOpen]);
-  const [theme, setTheme] = useState<ReaderTheme>(loadTheme);
+  const [themeChoice, setThemeChoice] = useState<ReaderThemeChoice>(loadTheme);
+  const deviceDark = useDeviceDark();
+  const theme: ReaderTheme = themeChoice === 'system' ? (deviceDark ? 'dark' : 'light') : themeChoice;
+  // Swipe to turn pages: a per-device choice (it depends on the device), on by default.
+  const [swipeOn, setSwipeOn] = useState(() => safeLocalStorageGet(LS_SWIPE) !== 'off');
+  const swipeOnRef = useRef(swipeOn);
+  swipeOnRef.current = swipeOn;
+  // True once the book frame has delivered a touch: only then is it safe to
+  // hide the toolbar, since a middle tap (a frame event) is how it comes back.
+  const frameTouchSeenRef = useRef(false);
   const [fontPct, setFontPct] = useState(loadFont);
   const [fontFamily, setFontFamily] = useState<ReaderSettings['font']>('default');
   const [margin, setMargin] = useState(16);
@@ -1284,7 +1320,7 @@ export function Reader({ id }: { id: string }) {
     if (!isSettingsFetched) return;
     const settings = settingsData?.reader;
     if (settings) {
-      setTheme(THEME_TO_READER[settings.theme]);
+      setThemeChoice(THEME_TO_READER[settings.theme] ?? 'light');
       setFontPct(settings.fontSize);
       setFontFamily(settings.font);
       setMargin(settings.margin);
@@ -1500,6 +1536,19 @@ export function Reader({ id }: { id: string }) {
   // than only when the direction changes.
   const goLeft = useCallback(() => (rtl ? goNext() : goPrev()), [rtl, goNext, goPrev]);
   const goRight = useCallback(() => (rtl ? goPrev() : goNext()), [rtl, goPrev, goNext]);
+  // The book frame's touch and tap listeners are attached once per chapter,
+  // so they reach the current handlers through refs.
+  const goLeftRef = useRef(goLeft);
+  goLeftRef.current = goLeft;
+  const goRightRef = useRef(goRight);
+  goRightRef.current = goRight;
+  const turnByTouch = useCallback((go: () => void) => {
+    if (frameTouchSeenRef.current) setChromeHidden(true);
+    go();
+  }, []);
+  const turnByTouchRef = useRef(turnByTouch);
+  turnByTouchRef.current = turnByTouch;
+  const swipedAtRef = useRef(0);
   const leftLabel = rtl ? t('Next page') : t('Previous page');
   const rightLabel = rtl ? t('Previous page') : t('Next page');
 
@@ -1848,6 +1897,52 @@ export function Reader({ id }: { id: string }) {
          * (a <sup>, a <span> a publisher wrapped the digit in) still routes, and
          * so book markup cannot stop it first.
          */
+        /*
+         * Swipe to turn, tap the middle to show or hide the toolbar. Taken from
+         * the book frame's own events, like the link capture below, so text
+         * selection and highlighting keep working everywhere on the page.
+         * Engines that deliver no events into the frame (WebKit, see the link
+         * notes) keep the edge tap zones and the toolbar's own controls.
+         */
+        rendition.hooks.content.register((contents: any) => {
+          const doc: Document | undefined = contents?.document;
+          if (!doc) return;
+          const selecting = () => {
+            const selection = doc.getSelection?.();
+            return !!selection && !selection.isCollapsed;
+          };
+          let start: { x: number; y: number; at: number } | null = null;
+          doc.addEventListener('touchstart', (event: TouchEvent) => {
+            frameTouchSeenRef.current = true;
+            const touch = event.touches.length === 1 ? event.touches[0] : null;
+            start = touch ? { x: touch.clientX, y: touch.clientY, at: Date.now() } : null;
+          }, { passive: true });
+          doc.addEventListener('touchend', (event: TouchEvent) => {
+            const from = start;
+            start = null;
+            const touch = event.changedTouches.length === 1 ? event.changedTouches[0] : null;
+            if (!from || !touch || !swipeOnRef.current || selecting()) return;
+            const dx = touch.clientX - from.x;
+            const dy = touch.clientY - from.y;
+            if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dx) < Math.abs(dy) * 1.5
+              || Date.now() - from.at > SWIPE_MAX_MS) return;
+            swipedAtRef.current = Date.now();
+            turnByTouchRef.current(dx < 0 ? goRightRef.current : goLeftRef.current);
+          }, { passive: true });
+          doc.addEventListener('click', (event: MouseEvent) => {
+            // Links are taken by the capture listener below, which prevents
+            // the default; a swipe can end in a click on some engines.
+            if (event.defaultPrevented || Date.now() - swipedAtRef.current < 400) return;
+            if ((event.target as Element | null)?.closest?.('a[href]') || selecting()) return;
+            const frame = doc.defaultView?.frameElement as HTMLElement | null;
+            const stage = viewerRef.current?.getBoundingClientRect();
+            if (!frame || !stage || stage.width <= 0) return;
+            const x = frame.getBoundingClientRect().left + event.clientX;
+            const along = (x - stage.left) / stage.width;
+            if (along > 0.3 && along < 0.7) setChromeHidden(hidden => !hidden);
+          });
+        });
+
         rendition.hooks.content.register((contents: any) => {
           const contentDocument: Document | undefined = contents?.document;
           if (!contentDocument) return;
@@ -2137,7 +2232,7 @@ export function Reader({ id }: { id: string }) {
   // Apply theme / font changes to a live rendition without rebuilding it, and
   // remember the preference across sessions.
   useEffect(() => {
-    safeLocalStorageSet(LS_THEME, theme);
+    safeLocalStorageSet(LS_THEME, themeChoice);
     applyTheme(theme);
   }, [theme, applyTheme]);
   useEffect(() => {
@@ -2165,6 +2260,13 @@ export function Reader({ id }: { id: string }) {
       window.removeEventListener('orientationchange', scheduleLinkSync);
     };
   }, [rendered, theme, fontPct, fontFamily, margin, lineHeight, spread, scheduleLinkSync]);
+
+  // The hidden toolbar can't take focus, so keyboard users get it back on Tab.
+  useEffect(() => {
+    const onTab = (e: KeyboardEvent) => { if (e.key === 'Tab') setChromeHidden(false); };
+    document.addEventListener('keydown', onTab);
+    return () => document.removeEventListener('keydown', onTab);
+  }, []);
 
   // Arrow-key navigation (the iframe also forwards keys via rendition).
   useEffect(() => {
@@ -2257,10 +2359,14 @@ export function Reader({ id }: { id: string }) {
     );
   }
 
+  // Any open panel keeps the toolbar showing; so does keyboard use (below).
+  const chromeVisible = !chromeHidden || tocOpen || annOpen || settingsOpen
+    || searchOpen || placesOpen || !!note;
+
   return (
     <div ref={shellRef} className={`${styles.reader} ${styles[`bg_${theme}`]}`}>
       {/* Top bar */}
-      <header className={styles.bar}>
+      <header className={chromeVisible ? styles.bar : `${styles.bar} ${styles.barHidden}`}>
         {/* Page heading for the reader view (SC 1.3.1), visually the bar title. */}
         <VisuallyHidden as="h1">{book.title}</VisuallyHidden>
         <Link href={`/book/${id}`} className={styles.iconBtn} title={t('Close reader')} aria-label={t('Close reader')}>
@@ -2615,17 +2721,28 @@ export function Reader({ id }: { id: string }) {
               <legend>{t('Page theme')}</legend>
               <div className={styles.themeChoices}>
                 {([
+                  ['system', SunMoon, t('Follow device')],
                   ['light', Sun, t('Light')], ['sepia', Coffee, t('Sepia')],
                   ['dark', Moon, t('Dark')], ['black', MoonStar, t('Black')],
                 ] as const).map(([value, Icon, label]) => (
-                  <button key={value} className={theme === value ? styles.choiceActive : styles.choice}
-                    aria-pressed={theme === value} onClick={() => {
-                      setTheme(value); persistSetting('theme', READER_TO_THEME[value]);
+                  <button key={value} className={themeChoice === value ? styles.choiceActive : styles.choice}
+                    aria-pressed={themeChoice === value} onClick={() => {
+                      setThemeChoice(value); persistSetting('theme', READER_TO_THEME[value]);
                     }}>
                     <Icon size={17} aria-hidden="true" focusable={false} /> {label}
                   </button>
                 ))}
               </div>
+            </fieldset>
+            <fieldset className={styles.settingGroup}>
+              <legend>{t('Page turns')}</legend>
+              <label className={styles.settingToggle}>
+                <input type="checkbox" checked={swipeOn} onChange={(e) => {
+                  setSwipeOn(e.target.checked);
+                  safeLocalStorageSet(LS_SWIPE, e.target.checked ? 'on' : 'off');
+                }} />
+                <span>{t('Swipe to turn pages')}</span>
+              </label>
             </fieldset>
             <fieldset className={styles.settingGroup}>
               <legend>{t('Columns')}</legend>
@@ -2684,10 +2801,10 @@ export function Reader({ id }: { id: string }) {
             strips laid over its edges: tap the left or right edge to turn.
             The arrows only show for keyboard focus. */}
         <div ref={viewerRef} className={styles.viewer} />
-        <button className={`${styles.navZone} ${styles.navZoneLeft}`} onClick={goLeft} aria-label={leftLabel}>
+        <button className={`${styles.navZone} ${styles.navZoneLeft}`} onClick={() => turnByTouch(goLeft)} aria-label={leftLabel}>
           <ChevronLeft size={28} aria-hidden="true" focusable={false} />
         </button>
-        <button className={`${styles.navZone} ${styles.navZoneRight}`} onClick={goRight} aria-label={rightLabel}>
+        <button className={`${styles.navZone} ${styles.navZoneRight}`} onClick={() => turnByTouch(goRight)} aria-label={rightLabel}>
           <ChevronRight size={28} aria-hidden="true" focusable={false} />
         </button>
 

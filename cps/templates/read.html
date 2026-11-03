@@ -237,7 +237,7 @@
             },
         };
 
-        function selectTheme (id) {
+        function selectTheme (id, persist) {
             let tickSpans = document.getElementById("themes").querySelectorAll("span");
             // Remove tick mark from all theme buttons
             tickSpans.forEach(function (tickSpan) {
@@ -245,8 +245,9 @@
             });
             // Add tick mark to the button corresponding to the currently selected theme
             document.getElementById(id).querySelector("span").textContent = "✓";
-            // Saving theme to local storage
-            ReaderSettings.set("theme", id);
+            // Saving theme to local storage. Not when applying a resolved
+            // "follow device" choice on open, which must stay saved as it is.
+            if (persist !== false) ReaderSettings.set("theme", id);
             // Apply theme to epubjs iframe
             reader.rendition.themes.select(id);
             // Apply theme to rest of the page. 
