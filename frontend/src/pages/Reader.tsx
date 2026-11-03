@@ -289,7 +289,11 @@ function applyDocumentTypography(doc: Document, settings: {
   if (!doc.getElementById(READER_LINE_HEIGHT_STYLE_ID)) {
     const style = doc.createElement('style');
     style.id = READER_LINE_HEIGHT_STYLE_ID;
-    style.textContent = 'body *:not(sup):not(sub):not(img):not(svg) { line-height: inherit !important; }';
+    style.textContent = 'body *:not(sup):not(sub):not(img):not(svg) { line-height: inherit !important; }'
+      // The book's own side margins stack on the reader's Page margins, so a
+      // book with `body { margin: 0 10% }` lost a fifth of the width on a
+      // phone. The reader's setting is the only side spacing.
+      + ' body { margin-left: 0 !important; margin-right: 0 !important; }';
     (doc.head || doc.documentElement).appendChild(style);
   }
 }
@@ -2676,11 +2680,14 @@ export function Reader({ id }: { id: string }) {
 
       {/* Viewer + page-turn zones */}
       <div className={styles.stage}>
-        <button className={styles.navZone} onClick={goLeft} aria-label={leftLabel}>
+        {/* The book uses the full width. The page-turn zones are invisible
+            strips laid over its edges: tap the left or right edge to turn.
+            The arrows only show for keyboard focus. */}
+        <div ref={viewerRef} className={styles.viewer} />
+        <button className={`${styles.navZone} ${styles.navZoneLeft}`} onClick={goLeft} aria-label={leftLabel}>
           <ChevronLeft size={28} aria-hidden="true" focusable={false} />
         </button>
-        <div ref={viewerRef} className={styles.viewer} />
-        <button className={styles.navZone} onClick={goRight} aria-label={rightLabel}>
+        <button className={`${styles.navZone} ${styles.navZoneRight}`} onClick={goRight} aria-label={rightLabel}>
           <ChevronRight size={28} aria-hidden="true" focusable={false} />
         </button>
 
