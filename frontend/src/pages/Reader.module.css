@@ -168,22 +168,29 @@
 }
 
 .navZone {
+  /* Invisible tap strips over the edges of the page; the book itself uses the
+     full width. Wide enough to hit with a thumb, narrow enough to leave the
+     text selectable everywhere but its very edge. */
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 64px;
-  flex-shrink: 0;
+  width: clamp(40px, 12vw, 96px);
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--reader-chrome-muted);
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+  -webkit-tap-highlight-color: transparent;
 }
-
-.navZone:hover {
-  color: var(--accent);
-  background: var(--reader-chrome-hover);
-}
+.navZoneLeft { left: 0; }
+.navZoneRight { right: 0; }
+.navZone > svg { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.navZone:focus-visible > svg { opacity: 1; color: var(--accent); }
 
 @media (max-width: 600px) {
-  .navZone { width: 44px; }
   .bar { gap: 2px; padding-inline: 2px; }
   .bookTitle { display: none; }
   .barControls { gap: 0; margin-left: auto; }
