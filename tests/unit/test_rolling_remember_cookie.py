@@ -13,25 +13,19 @@ These run the real vendored login manager on a small Flask app.
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 
-import flask
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from cps import ub
 
-from cps.cw_login import LoginManager, UserMixin, login_user, logout_user, current_user
 from cps.cw_login import login_manager as login_manager_module
+from tests.unit.login_world import REMEMBER_COOKIE, remember_login_app
 
 pytestmark = pytest.mark.unit
 
-COOKIE = "remember_token"
+COOKIE = REMEMBER_COOKIE
 DAY = 24 * 3600
-
-
-class User(UserMixin):
-    def __init__(self, user_id):
-        self.id = user_id
 
 
 @pytest.fixture
@@ -48,33 +42,7 @@ def db(tmp_path, monkeypatch):
 def web(db):
     # Not named `app`: pytest-flask keeps an app context open for a fixture of
     # that name, which would let one client's login leak into another's.
-    app = flask.Flask(__name__)
-    app.config.update(SECRET_KEY="test", TESTING=True, REMEMBER_COOKIE_NAME=COOKIE)
-    manager = LoginManager()
-    manager.init_app(app)
-
-    @manager.user_loader
-    def load(user_id, _random=None, _session_key=None):
-        return User(user_id) if str(user_id) == "7" else None
-
-    @app.route("/login/<kind>")
-    def login(kind):
-        if kind == "rolling":
-            login_user(User(7), remember=True, duration=timedelta(days=30), rolling=True)
-        else:
-            login_user(User(7), remember=True)
-        return "ok"
-
-    @app.route("/me")
-    def me():
-        return current_user.get_id() if current_user.is_authenticated else "anonymous"
-
-    @app.route("/logout")
-    def logout():
-        logout_user()
-        return "bye"
-
-    return app
+    return remember_login_app()
 
 
 @pytest.fixture

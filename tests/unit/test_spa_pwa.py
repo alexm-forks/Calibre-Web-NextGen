@@ -9,27 +9,13 @@ test_spa_shell.py, so they don't depend on a frontend build.
 """
 import json
 
-import flask
 import pytest
 
+from tests.unit.spa_shell_world import DEFAULT_ASSETS, spa_shell_app
 
-def _app(monkeypatch, tmp_path, assets=("index-abc.js", "Reader-def.js", "index-123.css")):
-    import cps.spa as spa_mod
-    (tmp_path / "index.html").write_text(
-        "<!doctype html><html><head><title>Calibre-Web NextGen</title></head>"
-        "<body><div id=root></div>"
-        '<script type="module" src="/static/app/assets/index-abc.js"></script></body></html>')
-    assets_dir = tmp_path / "assets"
-    assets_dir.mkdir()
-    for name in assets:
-        (assets_dir / name).write_text("x")
-    (assets_dir / "index-abc.js.map").write_text("{}")
-    monkeypatch.setattr(spa_mod, "_SPA_DIR", str(tmp_path))
-    monkeypatch.delenv("CWNG_SPA", raising=False)
-    monkeypatch.delenv("CWNG_PWA", raising=False)
-    app = flask.Flask(__name__)
-    app.register_blueprint(spa_mod.spa)
-    return app
+
+def _app(monkeypatch, tmp_path, assets=DEFAULT_ASSETS):
+    return spa_shell_app(monkeypatch, tmp_path, assets)
 
 
 def _sw_config(body):

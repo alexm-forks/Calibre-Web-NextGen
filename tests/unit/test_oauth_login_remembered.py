@@ -14,11 +14,10 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import flask
 import pytest
-from flask_babel import Babel
 
 import cps.oauth_bb as oauth_bb
+from tests.unit.login_world import oauth_callback_app
 
 pytestmark = pytest.mark.unit
 
@@ -46,9 +45,7 @@ def _login(monkeypatch, env):
         monkeypatch.delenv("CWNG_OAUTH_REMEMBER", raising=False)
     else:
         monkeypatch.setenv("CWNG_OAUTH_REMEMBER", env)
-    app = flask.Flask(__name__)
-    app.config["SECRET_KEY"] = "test"
-    Babel(app)
+    app = oauth_callback_app()
     user = SimpleNamespace(id=7, name="alice")
     entry = SimpleNamespace(user=user, user_id=user.id)
     db_session = MagicMock()
